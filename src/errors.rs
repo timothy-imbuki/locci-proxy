@@ -1,62 +1,28 @@
-use thiserror::Error;
+﻿use thiserror::Error;
+use pingora::Error as PingoraError;
 
-/// Project-wide result type alias.
 pub type ProxyResult<T> = Result<T, ProxyError>;
 
-/// All errors that can be produced during configuration loading and service initialisation.
-/// Request-time errors inside Pingora proxy trait methods use `pingora_core::Error` directly
-/// (the hot path) but may call `.to_string()` on these variants to populate error messages.
-#[derive(Debug, Error)]
+#[derive(Error, Debug)]
 pub enum ProxyError {
-    // ── Configuration ────────────────────────────────────────────────────────
-    #[error("could not read config file '{path}': {source}")]
-    ConfigFileRead {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("could not parse config file '{path}': {source}")]
-    ConfigFileParse {
-        path: String,
-        #[source]
-        source: serde_yaml::Error,
-    },
-
-    #[error("mode '{mode}' requires a '{section}' section in the config file")]
-    MissingConfigSection { mode: String, section: &'static str },
-
-    // ── Service initialisation ────────────────────────────────────────────────
-    #[error("invalid regex pattern '{pattern}': {source}")]
-    InvalidRegex {
-        pattern: String,
-        #[source]
-        source: regex::Error,
-    },
-
-    #[error("upstream group '{name}' has no servers configured")]
-    EmptyUpstream { name: String },
-
-    #[error("could not build load balancer for upstream '{name}': {source}")]
-    LoadBalancerBuild {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("invalid health-check URI '{uri}': {reason}")]
-    InvalidHealthCheckUri { uri: String, reason: String },
-
-    // ── Request-time (used for message text in pingora Error::new_str) ────────
-    #[error("upstream group '{name}' not found")]
-    UpstreamNotFound { name: String },
-
-    #[error("upstream group '{name}' has no healthy peers")]
-    NoHealthyPeers { name: String },
-
-    #[error("no route matched path '{path}'")]
-    NoMatchingRoute { path: String },
-
-    #[error("invalid URI '{uri}'")]
-    InvalidUri { uri: String },
+    #[error("Configuration error: {0}")]
+    Config(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("YAML parse error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+    #[error("Address parse error: {0}")]
+    AddrParse(#[from] std::net::AddrParseError),
+    #[error("Regex error: {0}")]
+    Regex(#[from] regex::Error),
+    #[error("Invalid regex pattern '{pattern}': {source}")]
+    InvalidRegex { pattern: String, source: regex::Error },
+    #[error("Pingora error: {0}")]
+    Pingora(#[from] Box<PingoraError>),
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Upstream '{0}' not found")]
+    UpstreamNotFound(String),
+    #[error("No servers in upstream '{0}'")]
+    EmptyUpstream(String),
 }

@@ -1,88 +1,28 @@
-use std::sync::Arc;
-use tracing::info;
-
-mod api;
+﻿mod errors;
 mod config;
-mod errors;
 mod services;
-
-use config::{OperationMode, UnifiedConfig, cli::parse_cli};
-use errors::{ProxyError, ProxyResult};
-use services::ServiceManager;
+mod api;
+use clap::Parser;
+use pingora::server::Server;
+use tracing::info;
+use errors::ProxyResult;
 
 fn main() -> ProxyResult<()> {
-    // Load .env first so RUST_LOG is in the environment before anything reads it.
-    dotenvy::dotenv().ok();
-
-    let cli = parse_cli();
-
-    // Config is loaded before tracing so we can use the log level it specifies.
-    // Any errors here go to stderr via eprintln since the subscriber isn't up yet.
-    let mut config = UnifiedConfig::load_from_file(&cli.config).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-
-    // Initialise tracing.
-    // Priority: RUST_LOG env var  >  config.yaml logging.level  >  "info"
-    {
-        use tracing_subscriber::EnvFilter;
-        let config_level = config
-            .logging
-            .as_ref()
-            .map(|l| l.level.as_str())
-            .unwrap_or("info");
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(config_level));
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
-
-    // CLI overrides
-    if let Some(mode_str) = &cli.mode {
-        config.mode = match mode_str.as_str() {
-            "lb" => OperationMode::LoadBalancer,
-            "gateway" => OperationMode::ApiGateway,
-            other => {
-                eprintln!("error: unknown mode '{other}' — use lb | gateway");
-                std::process::exit(1);
-            }
-        };
-    }
-    if let Some(bind) = &cli.bind {
-        config.server.bind_address = bind.clone();
-    }
-
-    info!(
-        mode = ?config.mode,
-        bind = %config.server.bind_address,
-        "Starting Locci Proxy"
-    );
-
-    // Pingora owns its runtime; plain fn main() + run_forever() is required.
-    let mut server =
-        pingora_core::server::Server::new(None).map_err(|e| ProxyError::LoadBalancerBuild {
-            name: "pingora-server".to_owned(),
-            source: std::io::Error::other(e.to_string()),
-        })?;
+    let config = config::load()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(&config.logging.as_ref().map(|l| l.level.clone()).unwrap_or_else(|| "info".into()))
+        .init();
+    info!("Starting locci-proxy in {:?} mode", config.mode);
+    let mut server = Server::new(Some(config.server.bind_address.parse()?))?;
     server.bootstrap();
-
-    let manager = Arc::new(ServiceManager::new(config.clone()));
-
-    match config.mode {
-        OperationMode::LoadBalancer => services::lb::add_lb_service(&mut server, &config)?,
-        OperationMode::ApiGateway => services::gateway::add_gateway_service(&mut server, &config)?,
-    }
-
-    // Control API runs on its own tokio runtime in a background thread.
+    let proxy_service = services::build_service(&config)?;
+    server.add_service(proxy_service);
     if config.control_api.enabled {
-        let control_cfg = config.control_api.clone();
-        let mgr = manager.clone();
-        std::thread::spawn(move || {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(api::start_control_api(mgr, control_cfg));
-        });
+        let api_addr = config.control_api.bind_address.parse()?;
+        let api_key = config.control_api.api_key.clone();
+        let config_clone = config.clone();
+        tokio::spawn(async move { api::run(api_addr, api_key, config_clone).await });
     }
-
+    info!("Proxy listening on {}", config.server.bind_address);
     server.run_forever();
 }

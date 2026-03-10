@@ -1,1 +1,6 @@
-// Runtime API configuration types (placeholder for future runtime-reconfiguration support)
+﻿#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ControlApiConfig {
+    pub enabled: bool,
+    pub bind_address: String,
+    pub api_key: String,
+}
